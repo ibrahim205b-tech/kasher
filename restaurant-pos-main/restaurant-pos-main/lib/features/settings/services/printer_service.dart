@@ -28,15 +28,21 @@ class PrinterService {
   BluetoothInfo? get selectedDevice => _selectedDevice;
 
   String _errorMessage = '';
+
   String get lastError => _errorMessage;
 
-  void _setError(String message, [Object? error, StackTrace? stack]) {
+  void _setError(
+    String message, [
+    Object? error,
+    StackTrace? stack,
+  ]) {
     _errorMessage = message;
     debugPrint('[PrinterService] $message');
 
     if (error != null) {
       debugPrint('[PrinterService] Details: $error');
     }
+
     if (stack != null) {
       debugPrintStack(stackTrace: stack);
     }
@@ -44,47 +50,42 @@ class PrinterService {
 
   Future<bool> requestPermissions() async {
     try {
-      // تحقق من صلاحية البلوتوث بالطريقة التي توفرها المكتبة.
-      final pluginPermission =
+      final granted =
           await PrintBluetoothThermal.isPermissionBluetoothGranted;
 
-      if (!pluginPermission) {
-        // اطلب الصلاحيات المناسبة لإصدار أندرويد.
-        final statuses = await <Permission>[
-          Permission.bluetoothScan,
-          Permission.bluetoothConnect,
-          Permission.bluetooth,
-        ].request();
+      if (granted) return true;
 
-        final connectStatus = statuses[Permission.bluetoothConnect];
-        final legacyStatus = statuses[Permission.bluetooth];
+      final statuses = await <Permission>[
+        Permission.bluetoothScan,
+        Permission.bluetoothConnect,
+        Permission.bluetooth,
+      ].request();
 
-        if (connectStatus?.isPermanentlyDenied == true ||
-            connectStatus?.isRestricted == true ||
-            legacyStatus?.isPermanentlyDenied == true) {
-          _setError(
-            'صلاحية البلوتوث مرفوضة نهائياً. '
-            'افتح إعدادات التطبيق وفعّل صلاحية الأجهزة القريبة.',
-          );
-          return false;
-        }
+      final connectStatus = statuses[Permission.bluetoothConnect];
 
-        // أعد الفحص بعد طلب الصلاحيات.
-        final permissionGranted =
-            await PrintBluetoothThermal.isPermissionBluetoothGranted;
+      if (connectStatus?.isPermanentlyDenied == true ||
+          connectStatus?.isRestricted == true) {
+        _setError(
+          'صلاحية البلوتوث مرفوضة. افتح إعدادات التطبيق '
+          'وفعّل صلاحية الأجهزة القريبة.',
+        );
+        return false;
+      }
 
-        if (!permissionGranted) {
-          _setError(
-            'صلاحية البلوتوث غير ممنوحة. '
-            'افتح إعدادات التطبيق واسمح للأجهزة القريبة.',
-          );
-          return false;
-        }
+      final permissionGranted =
+          await PrintBluetoothThermal.isPermissionBluetoothGranted;
+
+      if (!permissionGranted) {
+        _setError(
+          'صلاحية البلوتوث غير ممنوحة. '
+          'اسمح للتطبيق بالوصول إلى الأجهزة القريبة.',
+        );
+        return false;
       }
 
       return true;
     } catch (e, st) {
-      _setError('تعذر فحص صلاحيات البلوتوث', e, st);
+      _setError('تعذر فحص صلاحيات البلوتوث: $e', e, st);
       return false;
     }
   }
@@ -93,7 +94,7 @@ class PrinterService {
     try {
       return await PrintBluetoothThermal.bluetoothEnabled;
     } catch (e, st) {
-      _setError('تعذر فحص حالة البلوتوث', e, st);
+      _setError('تعذر فحص حالة البلوتوث: $e', e, st);
       return false;
     }
   }
@@ -110,7 +111,7 @@ class PrinterService {
       }
 
       _selectedDevice = BluetoothInfo(
-        name: (name == null || name.trim().isEmpty)
+        name: name == null || name.trim().isEmpty
             ? 'الطابعة المحفوظة'
             : name,
         macAdress: mac.trim(),
@@ -118,7 +119,7 @@ class PrinterService {
 
       return _selectedDevice;
     } catch (e, st) {
-      _setError('تعذر تحميل الطابعة المحفوظة', e, st);
+      _setError('تعذر تحميل الطابعة المحفوظة: $e', e, st);
       return null;
     }
   }
@@ -131,23 +132,30 @@ class PrinterService {
     }
 
     if (!await isBluetoothEnabled()) {
-      _setError('البلوتوث مطفأ. شغّله من إعدادات الهاتف ثم أعد المحاولة.');
+      _setError('البلوتوث مطفأ. شغّله ثم أعد المحاولة.');
       return <BluetoothInfo>[];
     }
 
     try {
       final devices = await PrintBluetoothThermal.pairedBluetooths;
-      debugPrint('[PrinterService] Paired devices: ${devices.length}');
+
+      debugPrint(
+        '[PrinterService] Paired devices: ${devices.length}',
+      );
+
       return devices;
     } catch (e, st) {
-      _setError('تعذر قراءة الطابعات المقترنة', e, st);
+      _setError('تعذر قراءة الطابعات المقترنة: $e', e, st);
       return <BluetoothInfo>[];
     }
   }
 
   Future<bool> connect(BluetoothInfo device) {
     final active = _connecting;
-    if (active != null) return active;
+
+    if (active != null) {
+      return active;
+    }
 
     final future = _connectInternal(device);
     _connecting = future;
@@ -160,50 +168,55 @@ class PrinterService {
   Future<bool> _connectInternal(BluetoothInfo device) async {
     _errorMessage = '';
 
-    if (!await requestPermissions()) return false;
+    if (!await requestPermissions()) {
+      return false;
+    }
 
     final mac = device.macAdress.trim();
 
     if (mac.isEmpty) {
-      _setError('عنوان الطابعة فارغ. اختر الطابعة من قائمة الأجهزة المقترنة.');
+      _setError(
+        'عنوان الطابعة فارغ. اختر الطابعة من الأجهزة المقترنة.',
+      );
       return false;
     }
 
     if (!await isBluetoothEnabled()) {
-      _setError('البلوتوث مطفأ. شغّله ثم حاول الاتصال بالطابعة.');
+      _setError('البلوتوث مطفأ. شغّله ثم حاول الاتصال.');
       return false;
     }
 
     try {
       debugPrint(
-        '[PrinterService] Connecting to ${device.name}, address: $mac',
+        '[PrinterService] Connecting to ${device.name}, MAC: $mac',
       );
 
-      final alreadyConnected =
-          await PrintBluetoothThermal.connectionStatus;
+      var connected = await PrintBluetoothThermal.connectionStatus;
 
-      if (!alreadyConnected) {
-        final connected = await PrintBluetoothThermal.connect(
+      if (!connected) {
+        connected = await PrintBluetoothThermal.connect(
           macPrinterAddress: mac,
         );
 
-        debugPrint('[PrinterService] Connect result: $connected');
-
-        if (!connected) {
-          _setError(
-            'فشل اتصال المكتبة بالطابعة ${device.name}. '
-            'تحقق من اقترانها، وأغلق أي تطبيق آخر يستخدم الطابعة، '
-            'ثم أعد المحاولة.',
-          );
-          return false;
-        }
+        debugPrint(
+          '[PrinterService] Connect result: $connected',
+        );
       }
 
-      final verified = await PrintBluetoothThermal.connectionStatus;
+      if (!connected) {
+        _setError(
+          'تعذر إنشاء اتصال بالطابعة ${device.name}. '
+          'تأكد من الاقتران وأغلق أي تطبيق آخر يستخدم الطابعة.',
+        );
+        return false;
+      }
+
+      final verified =
+          await PrintBluetoothThermal.connectionStatus;
 
       if (!verified) {
         _setError(
-          'لم يتم تأكيد الاتصال بالطابعة بعد محاولة الاتصال. أعد المحاولة.',
+          'أعادت المكتبة نجاح الاتصال، لكن فحص الاتصال اللاحق فشل.',
         );
         return false;
       }
@@ -215,10 +228,14 @@ class PrinterService {
       await prefs.setString(_prefNameKey, device.name);
 
       _errorMessage = '';
-      debugPrint('[PrinterService] Connection verified and device saved.');
+
+      debugPrint(
+        '[PrinterService] Connection verified and device saved.',
+      );
+
       return true;
     } catch (e, st) {
-      _setError('حدث استثناء أثناء الاتصال بالطابعة: $e', e, st);
+      _setError('حدث خطأ أثناء الاتصال بالطابعة: $e', e, st);
       return false;
     }
   }
@@ -228,7 +245,7 @@ class PrinterService {
       await PrintBluetoothThermal.disconnect;
       debugPrint('[PrinterService] Disconnected.');
     } catch (e, st) {
-      _setError('تعذر فصل اتصال الطابعة', e, st);
+      _setError('تعذر فصل اتصال الطابعة: $e', e, st);
     }
   }
 
@@ -237,14 +254,19 @@ class PrinterService {
       await loadSavedDevice();
     }
 
-    if (_selectedDevice == null) {
+    final device = _selectedDevice;
+
+    if (device == null) {
       _setError(
-        'لم تُحدَّد طابعة بعد. افتح إعدادات الطابعة واختر جهازاً مقترناً.',
+        'لم تُحدَّد طابعة محفوظة. افتح إعدادات الطابعة '
+        'واختر Printer001 ثم اضغط الاتصال وحفظ الإعدادات.',
       );
       return false;
     }
 
-    if (!await requestPermissions()) return false;
+    if (!await requestPermissions()) {
+      return false;
+    }
 
     if (!await isBluetoothEnabled()) {
       _setError('البلوتوث مطفأ. شغّله ثم أعد الطباعة.');
@@ -252,38 +274,56 @@ class PrinterService {
     }
 
     try {
-      if (await PrintBluetoothThermal.connectionStatus) {
+      final connected =
+          await PrintBluetoothThermal.connectionStatus;
+
+      if (connected) {
         return true;
       }
     } catch (e, st) {
-      _setError('تعذر التحقق من اتصال الطابعة', e, st);
-      return false;
+      debugPrint(
+        '[PrinterService] Connection status check failed: $e',
+      );
     }
 
-    return connect(_selectedDevice!);
+    debugPrint(
+      '[PrinterService] Connection lost; reconnecting before print.',
+    );
+
+    return connect(device);
   }
 
   Future<bool> _writeReceipt(List<int> bytes) async {
     if (bytes.isEmpty) {
-      _setError('لا توجد بيانات لإرسالها إلى الطابعة.');
+      _setError('بيانات الطباعة فارغة؛ لا يوجد شيء لإرساله.');
       return false;
     }
 
-    if (!await _ensureConnected()) return false;
+    if (!await _ensureConnected()) {
+      if (_errorMessage.isEmpty) {
+        _setError('تعذر الاتصال بالطابعة قبل إرسال البيانات.');
+      }
+      return false;
+    }
 
     try {
       final result = await PrintBluetoothThermal.writeBytes(bytes);
 
       if (!result) {
         _setError(
-          'الاتصال موجود لكن المكتبة لم تؤكد إرسال بيانات الطباعة. '
-          'تحقق من الورق والطابعة ثم أعد المحاولة.',
+          'الاتصال بالطابعة موجود، لكن المكتبة لم تؤكد إرسال '
+          'البيانات. تحقق من تشغيل الطابعة والورق ثم أعد المحاولة.',
         );
         return false;
       }
 
       _errorMessage = '';
-      debugPrint('[PrinterService] Print data sent successfully.');
+
+      debugPrint(
+        '[PrinterService] Print data sent successfully '
+        '(${bytes.length} bytes).',
+      );
+
       return true;
     } catch (e, st) {
       _setError('فشل إرسال بيانات الطباعة: $e', e, st);
@@ -296,72 +336,92 @@ class PrinterService {
     required RestaurantInfo info,
   }) async {
     try {
+      debugPrint('[PrinterService] Preparing invoice for printing.');
+
       final profile = await CapabilityProfile.load();
       final generator = Generator(PaperSize.mm58, profile);
       final List<int> bytes = <int>[];
 
-      bytes.addAll(generator.text(
-        info.name,
-        styles: const PosStyles(
-          align: PosAlign.center,
-          bold: true,
-          height: PosTextSize.size2,
-          width: PosTextSize.size2,
+      bytes.addAll(
+        generator.text(
+          info.name,
+          styles: const PosStyles(
+            align: PosAlign.center,
+            bold: true,
+            height: PosTextSize.size2,
+            width: PosTextSize.size2,
+          ),
         ),
-      ));
+      );
 
       if (info.showAddress && info.address.isNotEmpty) {
-        bytes.addAll(generator.text(
-          info.address,
-          styles: const PosStyles(align: PosAlign.center),
-        ));
+        bytes.addAll(
+          generator.text(
+            info.address,
+            styles: const PosStyles(
+              align: PosAlign.center,
+            ),
+          ),
+        );
       }
 
       if (info.showPhone && info.phone.isNotEmpty) {
-        bytes.addAll(generator.text(
-          'تلفون: ${info.phone}',
-          styles: const PosStyles(align: PosAlign.center),
-        ));
+        bytes.addAll(
+          generator.text(
+            'Phone: ${info.phone}',
+            styles: const PosStyles(
+              align: PosAlign.center,
+            ),
+          ),
+        );
       }
 
-      bytes.addAll(generator.text(
-        'تاريخ الطباعة: ${DateFormatter.formatDateTime(invoice.createdAt)}',
-        styles: const PosStyles(align: PosAlign.center),
-      ));
-
-      bytes.addAll(generator.text(
-        'رقم الفاتورة: ${invoice.invoiceNumber}',
-        styles: const PosStyles(
-          align: PosAlign.center,
-          bold: true,
+      bytes.addAll(
+        generator.text(
+          'Date: ${DateFormatter.formatDateTime(invoice.createdAt)}',
+          styles: const PosStyles(
+            align: PosAlign.center,
+          ),
         ),
-      ));
+      );
 
-      bytes.addAll(generator.hr());
-
-      bytes.addAll(generator.row(<PosColumn>[
-        PosColumn(
-          text: 'الصنف',
-          width: 6,
-          styles: const PosStyles(bold: true),
-        ),
-        PosColumn(
-          text: 'العدد',
-          width: 2,
+      bytes.addAll(
+        generator.text(
+          'Invoice: ${invoice.invoiceNumber}',
           styles: const PosStyles(
             align: PosAlign.center,
             bold: true,
           ),
         ),
-        PosColumn(
-          text: 'الإجمالي',
-          width: 4,
-          styles: const PosStyles(
-            align: PosAlign.right,
-            bold: true,
+      );
+
+      bytes.addAll(generator.hr());
+
+      bytes.addAll(
+        generator.row(<PosColumn>[
+          PosColumn(
+            text: 'Item',
+            width: 6,
+            styles: const PosStyles(bold: true),
           ),
-        ),
-      ]));
+          PosColumn(
+            text: 'Qty',
+            width: 2,
+            styles: const PosStyles(
+              align: PosAlign.center,
+              bold: true,
+            ),
+          ),
+          PosColumn(
+            text: 'Total',
+            width: 4,
+            styles: const PosStyles(
+              align: PosAlign.right,
+              bold: true,
+            ),
+          ),
+        ]),
+      );
 
       bytes.addAll(generator.hr());
 
@@ -371,124 +431,169 @@ class PrinterService {
         totalItemsCount += item.quantity;
 
         var lineName = item.itemName;
+
         if (item.sizeName != null) {
           lineName += ' (${item.sizeName})';
         }
+
         if (item.flavorName != null) {
           lineName += ' - ${item.flavorName}';
         }
 
-        bytes.addAll(generator.row(<PosColumn>[
-          PosColumn(text: lineName, width: 6),
-          PosColumn(
-            text: '${item.quantity}',
-            width: 2,
-            styles: const PosStyles(align: PosAlign.center),
-          ),
-          PosColumn(
-            text: CurrencyFormatter.format(
-              item.lineTotal,
-              currency: info.currency,
+        bytes.addAll(
+          generator.row(<PosColumn>[
+            PosColumn(
+              text: lineName,
+              width: 6,
             ),
-            width: 4,
-            styles: const PosStyles(align: PosAlign.right),
-          ),
-        ]));
+            PosColumn(
+              text: '${item.quantity}',
+              width: 2,
+              styles: const PosStyles(
+                align: PosAlign.center,
+              ),
+            ),
+            PosColumn(
+              text: CurrencyFormatter.format(
+                item.lineTotal,
+                currency: info.currency,
+              ),
+              width: 4,
+              styles: const PosStyles(
+                align: PosAlign.right,
+              ),
+            ),
+          ]),
+        );
 
-        if (item.extrasText != null && item.extrasText!.isNotEmpty) {
-          bytes.addAll(generator.text(
-            '  * ${item.extrasText}',
-            styles: const PosStyles(fontType: PosFontType.fontB),
-          ));
+        if (item.extrasText != null &&
+            item.extrasText!.isNotEmpty) {
+          bytes.addAll(
+            generator.text(
+              '  * ${item.extrasText}',
+              styles: const PosStyles(
+                fontType: PosFontType.fontB,
+              ),
+            ),
+          );
         }
       }
 
       bytes.addAll(generator.hr());
 
-      bytes.addAll(generator.row(<PosColumn>[
-        PosColumn(
-          text: 'عدد الأصناف:',
-          width: 6,
-          styles: const PosStyles(bold: true),
-        ),
-        PosColumn(
-          text: '$totalItemsCount',
-          width: 6,
-          styles: const PosStyles(
-            align: PosAlign.right,
-            bold: true,
+      bytes.addAll(
+        generator.row(<PosColumn>[
+          PosColumn(
+            text: 'Item count:',
+            width: 6,
+            styles: const PosStyles(bold: true),
           ),
-        ),
-      ]));
+          PosColumn(
+            text: '$totalItemsCount',
+            width: 6,
+            styles: const PosStyles(
+              align: PosAlign.right,
+              bold: true,
+            ),
+          ),
+        ]),
+      );
 
       if (invoice.discount > 0) {
-        bytes.addAll(generator.row(<PosColumn>[
-          PosColumn(text: 'الخصم:', width: 6),
-          PosColumn(
-            text: '-${CurrencyFormatter.format(invoice.discount, currency: info.currency)}',
-            width: 6,
-            styles: const PosStyles(align: PosAlign.right),
-          ),
-        ]));
+        bytes.addAll(
+          generator.row(<PosColumn>[
+            PosColumn(
+              text: 'Discount:',
+              width: 6,
+            ),
+            PosColumn(
+              text: '-${CurrencyFormatter.format(invoice.discount, currency: info.currency)}',
+              width: 6,
+              styles: const PosStyles(
+                align: PosAlign.right,
+              ),
+            ),
+          ]),
+        );
       }
 
-      bytes.addAll(generator.row(<PosColumn>[
-        PosColumn(
-          text: 'المجموع النهائي:',
-          width: 6,
-          styles: const PosStyles(
-            bold: true,
-            height: PosTextSize.size2,
+      bytes.addAll(
+        generator.row(<PosColumn>[
+          PosColumn(
+            text: 'Grand total:',
+            width: 6,
+            styles: const PosStyles(
+              bold: true,
+              height: PosTextSize.size2,
+            ),
           ),
-        ),
-        PosColumn(
-          text: CurrencyFormatter.format(
-            invoice.grandTotal,
-            currency: info.currency,
+          PosColumn(
+            text: CurrencyFormatter.format(
+              invoice.grandTotal,
+              currency: info.currency,
+            ),
+            width: 6,
+            styles: const PosStyles(
+              align: PosAlign.right,
+              bold: true,
+              height: PosTextSize.size2,
+            ),
           ),
-          width: 6,
-          styles: const PosStyles(
-            align: PosAlign.right,
-            bold: true,
-            height: PosTextSize.size2,
-          ),
-        ),
-      ]));
+        ]),
+      );
 
       bytes.addAll(generator.hr());
 
       if (info.showFooter && info.invoiceFooter.isNotEmpty) {
-        bytes.addAll(generator.text(
-          info.invoiceFooter,
-          styles: const PosStyles(
-            align: PosAlign.center,
-            bold: true,
+        bytes.addAll(
+          generator.text(
+            info.invoiceFooter,
+            styles: const PosStyles(
+              align: PosAlign.center,
+              bold: true,
+            ),
           ),
-        ));
+        );
       }
 
-      bytes.addAll(generator.feed(2));
-      bytes.addAll(generator.cut());
+      bytes.addAll(generator.feed(3));
+
+      debugPrint(
+        '[PrinterService] Invoice prepared: ${bytes.length} bytes.',
+      );
 
       return _writeReceipt(bytes);
     } catch (e, st) {
-      _setError('تعذر تجهيز الفاتورة للطباعة', e, st);
+      _setError('تعذر تجهيز الفاتورة للطباعة: $e', e, st);
       return false;
     }
   }
 
   Future<bool> printTestReceipt(RestaurantInfo info) async {
-    final testInvoice = Invoice(
-      id: 'test_id',
-      invoiceNumber: '${info.invoicePrefix}0000',
-      createdAt: DateTime.now(),
-      subtotal: 10000.0,
-      discount: 0.0,
-      grandTotal: 10000.0,
-      items: [],
-    );
+    try {
+      _errorMessage = '';
 
-    return printInvoice(invoice: testInvoice, info: info);
+      final bytes = <int>[
+        0x1B, 0x40,
+        0x1B, 0x61, 0x01,
+        ...'AL HAJJI RESTAURANT\n'.codeUnits,
+        ...'PRINTER TEST\n'.codeUnits,
+        ...'--------------------------\n'.codeUnits,
+        ...'Bluetooth test: 1234567890\n'.codeUnits,
+        ...'Paper width: 58mm\n'.codeUnits,
+        0x0A,
+        0x0A,
+        0x0A,
+        0x1B, 0x61, 0x00,
+      ];
+
+      debugPrint('[PrinterService] Starting raw printer test.');
+
+      return await _writeReceipt(bytes);
+    } catch (e, st) {
+      _setError('فشل اختبار الطباعة: $e', e, st);
+      return false;
+    }
   }
 
   Future<bool> printSalarySlip({
@@ -500,46 +605,61 @@ class PrinterService {
       final generator = Generator(PaperSize.mm58, profile);
       final List<int> bytes = <int>[];
 
-      bytes.addAll(generator.text(
-        info.name,
-        styles: const PosStyles(
-          align: PosAlign.center,
-          bold: true,
-          height: PosTextSize.size2,
+      bytes.addAll(
+        generator.text(
+          info.name,
+          styles: const PosStyles(
+            align: PosAlign.center,
+            bold: true,
+            height: PosTextSize.size2,
+          ),
         ),
-      ));
+      );
 
-      bytes.addAll(generator.text(
-        '*** كشف تسديد راتب ***',
-        styles: const PosStyles(
-          align: PosAlign.center,
-          bold: true,
+      bytes.addAll(
+        generator.text(
+          'Salary Payment Receipt',
+          styles: const PosStyles(
+            align: PosAlign.center,
+            bold: true,
+          ),
         ),
-      ));
+      );
 
-      bytes.addAll(generator.text(
-        'التاريخ: ${DateFormatter.formatDateTime(DateTime.now())}',
-        styles: const PosStyles(align: PosAlign.center),
-      ));
+      bytes.addAll(
+        generator.text(
+          'Date: ${DateFormatter.formatDateTime(DateTime.now())}',
+          styles: const PosStyles(
+            align: PosAlign.center,
+          ),
+        ),
+      );
 
       bytes.addAll(generator.hr());
-      bytes.addAll(generator.text('اسم الموظف: ${employee.name}'));
-      bytes.addAll(generator.text('الوظيفة: ${employee.role}'));
-      bytes.addAll(generator.text('نوع الراتب: ${employee.payType.nameArabic}'));
+      bytes.addAll(generator.text('Employee: ${employee.name}'));
+      bytes.addAll(generator.text('Role: ${employee.role}'));
+      bytes.addAll(
+        generator.text(
+          'Salary type: ${employee.payType.nameArabic}',
+        ),
+      );
 
-      bytes.addAll(generator.text(
-        'المبلغ المصروف: ${CurrencyFormatter.format(employee.salary, currency: info.currency)}',
-        styles: const PosStyles(bold: true),
-      ));
+      bytes.addAll(
+        generator.text(
+          'Paid amount: ${CurrencyFormatter.format(employee.salary, currency: info.currency)}',
+          styles: const PosStyles(bold: true),
+        ),
+      );
 
       bytes.addAll(generator.hr());
-      bytes.addAll(generator.text('توقيع المستلم: ....................'));
-      bytes.addAll(generator.feed(2));
-      bytes.addAll(generator.cut());
+      bytes.addAll(
+        generator.text('Recipient signature: ....................'),
+      );
+      bytes.addAll(generator.feed(3));
 
       return _writeReceipt(bytes);
     } catch (e, st) {
-      _setError('تعذر تجهيز كشف الراتب للطباعة', e, st);
+      _setError('تعذر تجهيز كشف الراتب للطباعة: $e', e, st);
       return false;
     }
   }
