@@ -1,3 +1,4 @@
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:print_bluetooth_thermal/print_bluetooth_thermal.dart';
@@ -28,38 +29,120 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
 
   Future<void> _initPrinter() async {
     final saved = await PrinterService.instance.loadSavedDevice();
-    if (saved != null) {
+    if (saved != null && mounted) {
       setState(() => selectedBluetoothDevice = saved);
     }
     await _scanPrinters();
   }
 
   Future<void> _scanPrinters() async {
+    if (!mounted) return;
+
     setState(() => isScanningPrinters = true);
-    final isBtOn = await PrinterService.instance.isBluetoothEnabled();
-    if (!isBtOn && mounted) {
+
+    try {
+      final isBtOn =
+          await PrinterService.instance.isBluetoothEnabled();
+
+      if (!isBtOn && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'يرجى تفعيل البلوتوث في الجهاز أولاً.',
+            ),
+            backgroundColor: AppColors.warning,
+          ),
+        );
+      }
+
+      final devices =
+          await PrinterService.instance.getBondedDevices();
+
+      if (!mounted) return;
+
+      setState(() {
+        bluetoothDevices = devices;
+        isScanningPrinters = false;
+
+        if (devices.isNotEmpty) {
+          final savedMac = selectedBluetoothDevice?.macAdress;
+
+          selectedBluetoothDevice = devices.firstWhere(
+            (device) => device.macAdress == savedMac,
+            orElse: () => devices.first,
+          );
+        } else {
+          selectedBluetoothDevice = null;
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() => isScanningPrinters = false);
+
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('⚠️ يرجى تفعيل البلوتوث في التابلت/الجهاز أولاً'),
-          backgroundColor: AppColors.warning,
+        SnackBar(
+          content: Text('تعذر تحميل الطابعات المقترنة: $e'),
+          backgroundColor: AppColors.error,
         ),
       );
     }
+  }
 
-    final devices = await PrinterService.instance.getBondedDevices();
-    setState(() {
-      bluetoothDevices = devices;
-      isScanningPrinters = false;
-      if (devices.isNotEmpty) {
-        // preserve saved device if it's in list, else pick first
-        final savedMac = selectedBluetoothDevice?.macAdress;
-        final match = devices.firstWhere(
-          (d) => d.macAdress == savedMac,
-          orElse: () => devices.first,
-        );
-        selectedBluetoothDevice = match;
-      }
-    });
+  void _showPrinterResult({
+    required bool success,
+    required String fallbackMessage,
+  }) {
+    if (!mounted) return;
+
+    final error = PrinterService.instance.lastError;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          success
+              ? fallbackMessage
+              : (error.isNotEmpty ? error : fallbackMessage),
+        ),
+        backgroundColor:
+            success ? AppColors.success : AppColors.error,
+        duration: const Duration(seconds: 6),
+      ),
+    );
+  }
+
+  Future<void> _connectPrinter() async {
+    final device = selectedBluetoothDevice;
+
+    if (device == null) {
+      _showPrinterResult(
+        success: false,
+        fallbackMessage: 'اختر طابعة من قائمة الأجهزة المقترنة أولاً.',
+      );
+      return;
+    }
+
+    final connected =
+        await PrinterService.instance.connect(device);
+
+    _showPrinterResult(
+      success: connected,
+      fallbackMessage: connected
+          ? 'تم الاتصال بالطابعة بنجاح.'
+          : 'فشل الاتصال بالطابعة.',
+    );
+  }
+
+  Future<void> _testPrinter(restaurantInfo) async {
+    final ok = await PrinterService.instance
+        .printTestReceipt(restaurantInfo);
+
+    _showPrinterResult(
+      success: ok,
+      fallbackMessage: ok
+          ? 'تم إرسال أمر اختبار الطباعة.'
+          : 'فشل اختبار الطباعة.',
+    );
   }
 
   @override
@@ -68,11 +151,16 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     final restaurantInfo = ref.watch(restaurantInfoProvider);
     final primaryColor = themeState.accentColor.color;
 
-    final nameCtrl = TextEditingController(text: restaurantInfo.name);
-    final addressCtrl = TextEditingController(text: restaurantInfo.address);
-    final phoneCtrl = TextEditingController(text: restaurantInfo.phone);
-    final currencyCtrl = TextEditingController(text: restaurantInfo.currency);
-    final footerCtrl = TextEditingController(text: restaurantInfo.invoiceFooter);
+    final nameCtrl =
+        TextEditingController(text: restaurantInfo.name);
+    final addressCtrl =
+        TextEditingController(text: restaurantInfo.address);
+    final phoneCtrl =
+        TextEditingController(text: restaurantInfo.phone);
+    final currencyCtrl =
+        TextEditingController(text: restaurantInfo.currency);
+    final footerCtrl =
+        TextEditingController(text: restaurantInfo.invoiceFooter);
 
     return Scaffold(
       backgroundColor: AppColors.pureWhite,
@@ -84,27 +172,34 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 1. Accent Color Selector
             _buildSectionHeader(
               title: 'اللون المميز (Accent Color)',
-              subtitle: 'اختر اللون الذي يزين الأزرار والشريط السفلي والعناصر النشطة (مع بقاء الخلفية أبيض نقي)',
+              subtitle:
+                  'اختر اللون الذي يزين الأزرار والعناصر النشطة.',
             ),
             const SizedBox(height: 12),
-            Row(
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
               children: AppAccentColor.values.map((accent) {
-                final isSelected = themeState.accentColor == accent;
+                final isSelected =
+                    themeState.accentColor == accent;
+
                 return GestureDetector(
                   onTap: () {
-                    ref.read(themeSettingsProvider.notifier).setAccentColor(accent);
+                    ref
+                        .read(themeSettingsProvider.notifier)
+                        .setAccentColor(accent);
                   },
                   child: Container(
-                    margin: const EdgeInsets.only(right: 16),
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       color: accent.lightBackground,
                       borderRadius: BorderRadius.circular(16),
                       border: Border.all(
-                        color: isSelected ? accent.color : AppColors.borderLight,
+                        color: isSelected
+                            ? accent.color
+                            : AppColors.borderLight,
                         width: isSelected ? 3 : 1,
                       ),
                     ),
@@ -114,7 +209,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           backgroundColor: accent.color,
                           radius: 20,
                           child: isSelected
-                              ? const Icon(Icons.check_rounded, color: Colors.white)
+                              ? const Icon(
+                                  Icons.check_rounded,
+                                  color: Colors.white,
+                                )
                               : null,
                         ),
                         const SizedBox(height: 8),
@@ -122,7 +220,9 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                           accent.nameArabic,
                           style: TextStyle(
                             fontSize: 12,
-                            fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                            fontWeight: isSelected
+                                ? FontWeight.bold
+                                : FontWeight.normal,
                           ),
                         ),
                       ],
@@ -131,102 +231,108 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 );
               }).toList(),
             ),
-
             const SizedBox(height: 32),
             const Divider(),
             const SizedBox(height: 16),
-
-            // 2. Bluetooth Printer Configuration
             _buildSectionHeader(
-              title: 'إعدادات الطابعة الحرارية (Bluetooth Thermal Printer)',
-              subtitle: 'ربط طابعة البلوتوث بعرض 56mm أو 58mm واختبار الطباعة الفورية',
+              title: 'إعدادات الطابعة الحرارية',
+              subtitle:
+                  'ربط طابعة البلوتوث واختبار الطباعة الفورية.',
             ),
             const SizedBox(height: 12),
-
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
-                side: const BorderSide(color: AppColors.borderLight),
+                side: const BorderSide(
+                  color: AppColors.borderLight,
+                ),
               ),
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Column(
                   children: [
                     if (bluetoothDevices.isEmpty) ...[
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.amber.shade50,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: Colors.amber.shade200),
-                        ),
-                        child: Row(
-                          children: const [
-                            Icon(Icons.info_outline, color: Colors.amber),
-                            SizedBox(width: 10),
-                            Expanded(
-                              child: Text(
-                                'خطوات الربط:\n1. قم باقتران الطابعة أولاً من إعدادات البلوتوث الخاصة بالتابلت/الجهاز.\n2. تأكد من تفعيل البلوتوث والموقع (Location).\n3. اضغط على زر التحديث 🔄 أعلى اليمين لاستيراد الطابعة.',
-                                style: TextStyle(fontSize: 12, color: Colors.black87),
-                              ),
-                            ),
-                          ],
-                        ),
+                      const Text(
+                        'اقرن الطابعة من إعدادات البلوتوث في الجهاز، '
+                        'ثم اضغط زر التحديث.',
                       ),
                       const SizedBox(height: 16),
                     ],
-
                     Row(
                       children: [
                         Expanded(
-                          child: DropdownButtonFormField<BluetoothInfo>(
+                          child:
+                              DropdownButtonFormField<BluetoothInfo>(
                             value: selectedBluetoothDevice,
+                            isExpanded: true,
                             decoration: const InputDecoration(
-                              labelText: 'الأجهزة المقترنة (Bluetooth Devices)',
+                              labelText: 'الأجهزة المقترنة',
                               border: OutlineInputBorder(),
                             ),
-                            items: bluetoothDevices.map((d) {
-                              return DropdownMenuItem(
-                                value: d,
-                                child: Text('${d.name} (${d.macAdress})'),
+                            items: bluetoothDevices.map((device) {
+                              return DropdownMenuItem<BluetoothInfo>(
+                                value: device,
+                                child: Text(
+                                  '${device.name} (${device.macAdress})',
+                                  overflow: TextOverflow.ellipsis,
+                                ),
                               );
                             }).toList(),
-                            onChanged: (val) {
-                              setState(() => selectedBluetoothDevice = val);
+                            onChanged: (value) {
+                              setState(() {
+                                selectedBluetoothDevice = value;
+                              });
                             },
                           ),
                         ),
                         const SizedBox(width: 12),
                         IconButton(
+                          tooltip: 'تحديث الطابعات',
+                          onPressed: isScanningPrinters
+                              ? null
+                              : _scanPrinters,
                           icon: isScanningPrinters
                               ? const SizedBox(
                                   width: 20,
                                   height: 20,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
                                 )
                               : const Icon(Icons.refresh_rounded),
-                          onPressed: _scanPrinters,
                         ),
                       ],
                     ),
                     const SizedBox(height: 16),
-
                     Row(
                       children: [
-                        const Text('حجم ورق الطباعة: ', style: TextStyle(fontWeight: FontWeight.bold)),
+                        const Text(
+                          'حجم الورق:',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                         const SizedBox(width: 12),
                         ChoiceChip(
-                          label: const Text('58mm (الافتراضي)'),
-                          selected: restaurantInfo.paperWidth == '58mm',
+                          label: const Text('58mm'),
+                          selected:
+                              restaurantInfo.paperWidth == '58mm',
                           selectedColor: primaryColor,
                           labelStyle: TextStyle(
-                            color: restaurantInfo.paperWidth == '58mm' ? Colors.white : AppColors.textDark,
+                            color:
+                                restaurantInfo.paperWidth == '58mm'
+                                    ? Colors.white
+                                    : AppColors.textDark,
                           ),
-                          onSelected: (val) {
-                            if (val) {
-                              ref.read(restaurantInfoProvider.notifier).updateInfo(
-                                    restaurantInfo.copyWith(paperWidth: '58mm'),
+                          onSelected: (value) {
+                            if (value) {
+                              ref
+                                  .read(restaurantInfoProvider.notifier)
+                                  .updateInfo(
+                                    restaurantInfo.copyWith(
+                                      paperWidth: '58mm',
+                                    ),
                                   );
                             }
                           },
@@ -234,67 +340,53 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                         const SizedBox(width: 8),
                         ChoiceChip(
                           label: const Text('56mm'),
-                          selected: restaurantInfo.paperWidth == '56mm',
+                          selected:
+                              restaurantInfo.paperWidth == '56mm',
                           selectedColor: primaryColor,
                           labelStyle: TextStyle(
-                            color: restaurantInfo.paperWidth == '56mm' ? Colors.white : AppColors.textDark,
+                            color:
+                                restaurantInfo.paperWidth == '56mm'
+                                    ? Colors.white
+                                    : AppColors.textDark,
                           ),
-                          onSelected: (val) {
-                            if (val) {
-                              ref.read(restaurantInfoProvider.notifier).updateInfo(
-                                    restaurantInfo.copyWith(paperWidth: '56mm'),
+                          onSelected: (value) {
+                            if (value) {
+                              ref
+                                  .read(restaurantInfoProvider.notifier)
+                                  .updateInfo(
+                                    restaurantInfo.copyWith(
+                                      paperWidth: '56mm',
+                                    ),
                                   );
                             }
                           },
                         ),
                       ],
                     ),
-
                     const SizedBox(height: 16),
-
-                    Row(
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 12,
                       children: [
                         ElevatedButton.icon(
-                          style: ElevatedButton.styleFrom(backgroundColor: primaryColor),
-                          icon: const Icon(Icons.bluetooth_connected_rounded, color: Colors.white),
-                          label: const Text('الاتصال وحفظ إعدادات الطابعة', style: TextStyle(color: Colors.white)),
-                          onPressed: () async {
-                            if (selectedBluetoothDevice != null) {
-                              final connected = await PrinterService.instance
-                                  .connect(selectedBluetoothDevice!);
-                              if (context.mounted) {
-                                ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(
-                                    content: Text(connected
-                                        ? 'تم الاتصال بالطابعة بنجاح ✓'
-                                        : 'فشل الاتصال بالطابعة، تحقق من الاقتران'),
-                                    backgroundColor:
-                                        connected ? AppColors.success : AppColors.error,
-                                  ),
-                                );
-                              }
-                            }
-                          },
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: primaryColor,
+                          ),
+                          icon: const Icon(
+                            Icons.bluetooth_connected_rounded,
+                            color: Colors.white,
+                          ),
+                          label: const Text(
+                            'الاتصال وحفظ إعدادات الطابعة',
+                            style: TextStyle(color: Colors.white),
+                          ),
+                          onPressed: _connectPrinter,
                         ),
-                        const SizedBox(width: 12),
                         OutlinedButton.icon(
                           icon: const Icon(Icons.print_rounded),
-                          label: const Text('زر اختبار الطباعة (Test Print)'),
-                          onPressed: () async {
-                            final ok = await PrinterService.instance
-                                .printTestReceipt(restaurantInfo);
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                SnackBar(
-                                  content: Text(ok
-                                      ? 'تم إرسال أمر اختبار الطباعة'
-                                      : 'لم يتم الاتصال بالطابعة بعد'),
-                                  backgroundColor:
-                                      ok ? AppColors.success : AppColors.warning,
-                                ),
-                              );
-                            }
-                          },
+                          label: const Text('اختبار الطباعة'),
+                          onPressed: () =>
+                              _testPrinter(restaurantInfo),
                         ),
                       ],
                     ),
@@ -302,23 +394,22 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ),
               ),
             ),
-
             const SizedBox(height: 32),
             const Divider(),
             const SizedBox(height: 16),
-
-            // 3. Restaurant & Thermal Invoice Info Form
             _buildSectionHeader(
-              title: 'بيانات المطعم وتخصيص الفاتورة الحرارية',
-              subtitle: 'تعديل البيانات التي تظهر أعلى وأسفل الفاتورة الحرارية المطبوعة دون الحاجة لتحديث التطبيق',
+              title: 'بيانات المطعم وتخصيص الفاتورة',
+              subtitle:
+                  'عدّل البيانات التي تظهر على الفاتورة المطبوعة.',
             ),
             const SizedBox(height: 12),
-
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(16),
-                side: const BorderSide(color: AppColors.borderLight),
+                side: const BorderSide(
+                  color: AppColors.borderLight,
+                ),
               ),
               child: Padding(
                 padding: const EdgeInsets.all(20),
@@ -326,67 +417,98 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                   children: [
                     TextField(
                       controller: nameCtrl,
-                      decoration: const InputDecoration(labelText: 'اسم المطعم', border: OutlineInputBorder()),
+                      decoration: const InputDecoration(
+                        labelText: 'اسم المطعم',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                     const SizedBox(height: 12),
                     TextField(
                       controller: addressCtrl,
-                      decoration: const InputDecoration(labelText: 'العنوان', border: OutlineInputBorder()),
+                      decoration: const InputDecoration(
+                        labelText: 'العنوان',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                     const SizedBox(height: 12),
                     TextField(
                       controller: phoneCtrl,
-                      decoration: const InputDecoration(labelText: 'رقم الهاتف', border: OutlineInputBorder()),
+                      decoration: const InputDecoration(
+                        labelText: 'رقم الهاتف',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                     const SizedBox(height: 12),
                     TextField(
                       controller: currencyCtrl,
-                      decoration: const InputDecoration(labelText: 'العملة المستخدمة (مثال: د.ع / ر.س / USD)', border: OutlineInputBorder()),
+                      decoration: const InputDecoration(
+                        labelText: 'العملة المستخدمة',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                     const SizedBox(height: 12),
                     TextField(
                       controller: footerCtrl,
-                      decoration: const InputDecoration(labelText: 'الرسالة أسفل الفاتورة (تذييل الفاتورة)', border: OutlineInputBorder()),
+                      decoration: const InputDecoration(
+                        labelText: 'رسالة أسفل الفاتورة',
+                        border: OutlineInputBorder(),
+                      ),
                     ),
                     const SizedBox(height: 16),
-
                     SwitchListTile(
                       title: const Text('إظهار العنوان في الفاتورة'),
                       value: restaurantInfo.showAddress,
                       activeColor: primaryColor,
-                      onChanged: (val) {
-                        ref.read(restaurantInfoProvider.notifier).updateInfo(
-                              restaurantInfo.copyWith(showAddress: val),
+                      onChanged: (value) {
+                        ref
+                            .read(restaurantInfoProvider.notifier)
+                            .updateInfo(
+                              restaurantInfo.copyWith(
+                                showAddress: value,
+                              ),
                             );
                       },
                     ),
                     SwitchListTile(
-                      title: const Text('إظهار رقم الهاتف في الفاتورة'),
+                      title: const Text(
+                        'إظهار رقم الهاتف في الفاتورة',
+                      ),
                       value: restaurantInfo.showPhone,
                       activeColor: primaryColor,
-                      onChanged: (val) {
-                        ref.read(restaurantInfoProvider.notifier).updateInfo(
-                              restaurantInfo.copyWith(showPhone: val),
+                      onChanged: (value) {
+                        ref
+                            .read(restaurantInfoProvider.notifier)
+                            .updateInfo(
+                              restaurantInfo.copyWith(
+                                showPhone: value,
+                              ),
                             );
                       },
                     ),
                     SwitchListTile(
-                      title: const Text('إظهار رسالة التذييل أسفل الفاتورة'),
+                      title: const Text(
+                        'إظهار رسالة التذييل أسفل الفاتورة',
+                      ),
                       value: restaurantInfo.showFooter,
                       activeColor: primaryColor,
-                      onChanged: (val) {
-                        ref.read(restaurantInfoProvider.notifier).updateInfo(
-                              restaurantInfo.copyWith(showFooter: val),
+                      onChanged: (value) {
+                        ref
+                            .read(restaurantInfoProvider.notifier)
+                            .updateInfo(
+                              restaurantInfo.copyWith(
+                                showFooter: value,
+                              ),
                             );
                       },
                     ),
                     const SizedBox(height: 16),
-
                     SizedBox(
                       width: double.infinity,
                       height: 48,
                       child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(backgroundColor: primaryColor),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: primaryColor,
+                        ),
                         onPressed: () async {
                           final updated = restaurantInfo.copyWith(
                             name: nameCtrl.text.trim(),
@@ -395,65 +517,85 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                             currency: currencyCtrl.text.trim(),
                             invoiceFooter: footerCtrl.text.trim(),
                           );
-                          await ref.read(restaurantInfoProvider.notifier).updateInfo(updated);
+
+                          await ref
+                              .read(restaurantInfoProvider.notifier)
+                              .updateInfo(updated);
+
                           if (context.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                               const SnackBar(
-                                content: Text('تم حفظ بيانات المطعم والتطبيق بنجاح ✓'),
+                                content: Text(
+                                  'تم حفظ بيانات المطعم والفاتورة بنجاح.',
+                                ),
                                 backgroundColor: AppColors.success,
                               ),
                             );
                           }
                         },
-                        child: const Text('حفظ بيانات المطعم والفاتورة', style: TextStyle(color: Colors.white, fontSize: 16)),
+                        child: const Text(
+                          'حفظ بيانات المطعم والفاتورة',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                          ),
+                        ),
                       ),
                     ),
                   ],
                 ),
               ),
             ),
-
             const SizedBox(height: 32),
             const Divider(),
             const SizedBox(height: 16),
-
-            // 4. Data Control & Reset Demo Data
             _buildSectionHeader(
-              title: 'إدارة قاعدة البيانات والنسخ الاحتياطي',
-              subtitle: 'تحميل البيانات التجريبية للاستعراض أو مسح القاعدة وإعادة التهيئة',
+              title: 'إدارة قاعدة البيانات',
+              subtitle:
+                  'إعادة تحميل البيانات التجريبية أو مسح قاعدة البيانات.',
             ),
             const SizedBox(height: 12),
-
-            Row(
+            Wrap(
+              spacing: 16,
+              runSpacing: 12,
               children: [
                 OutlinedButton.icon(
                   icon: const Icon(Icons.restart_alt_rounded),
-                  label: const Text('إعادة تحميل البيانات التجريبية (Demo Data)'),
+                  label: const Text('إعادة تحميل البيانات التجريبية'),
                   onPressed: () async {
                     await DatabaseHelper.instance.reloadDemoData();
-                    await ref.read(menuNotifierProvider.notifier).loadMenu();
+                    await ref
+                        .read(menuNotifierProvider.notifier)
+                        .loadMenu();
+
                     if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('تم إعادة استعادة البيانات التجريبية بنجاح ✓'),
+                          content: Text(
+                            'تم استعادة البيانات التجريبية بنجاح.',
+                          ),
                           backgroundColor: AppColors.success,
                         ),
                       );
                     }
                   },
                 ),
-                const SizedBox(width: 16),
                 OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(foregroundColor: AppColors.error),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.error,
+                  ),
                   icon: const Icon(Icons.delete_forever_rounded),
                   label: const Text('مسح جميع البيانات'),
                   onPressed: () async {
                     await DatabaseHelper.instance.clearAllData();
-                    await ref.read(menuNotifierProvider.notifier).loadMenu();
+                    await ref
+                        .read(menuNotifierProvider.notifier)
+                        .loadMenu();
+
                     if (context.mounted) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
-                          content: Text('تم مسح جميع البيانات بنجاح'),
+                          content: Text('تم مسح جميع البيانات.'),
                           backgroundColor: AppColors.warning,
                         ),
                       );
@@ -462,7 +604,6 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
                 ),
               ],
             ),
-
             const SizedBox(height: 40),
           ],
         ),
@@ -470,7 +611,10 @@ class _SettingsPageState extends ConsumerState<SettingsPage> {
     );
   }
 
-  Widget _buildSectionHeader({required String title, required String subtitle}) {
+  Widget _buildSectionHeader({
+    required String title,
+    required String subtitle,
+  }) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
