@@ -1,5 +1,7 @@
 
 import 'dart:async';
+import 'dart:convert';
+
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -27,17 +29,20 @@ class PrinterService {
   BluetoothInfo? get selectedDevice => _selectedDevice;
 
   String _errorMessage = '';
+
   String get lastError => _errorMessage;
 
   void _setError(String message, [Object? error, StackTrace? stack]) {
     _errorMessage = message;
-    debugPrint(
-      error == null
-          ? '[PrinterService] $message'
-          : '[PrinterService] $message: $error',
-    );
-    if (stack != null) {
-      debugPrintStack(stackTrace: stack);
+
+    if (error != null) {
+      debugPrint('[PrinterService] $message: $error');
+
+      if (stack != null) {
+        debugPrintStack(stackTrace: stack);
+      }
+    } else {
+      debugPrint('[PrinterService] $message');
     }
   }
 
@@ -74,7 +79,7 @@ class PrinterService {
 
       return true;
     } catch (e, st) {
-      _setError('تعذر التحقق من صلاحيات البلوتوث: $e', e, st);
+      _setError('تعذر التحقق من صلاحيات البلوتوث', e, st);
       return false;
     }
   }
@@ -83,7 +88,7 @@ class PrinterService {
     try {
       return await PrintBluetoothThermal.bluetoothEnabled;
     } catch (e, st) {
-      _setError('تعذر فحص حالة البلوتوث: $e', e, st);
+      _setError('تعذر فحص حالة البلوتوث', e, st);
       return false;
     }
   }
@@ -91,6 +96,7 @@ class PrinterService {
   Future<BluetoothInfo?> loadSavedDevice() async {
     try {
       final prefs = await SharedPreferences.getInstance();
+
       final mac = prefs.getString(_prefMacKey);
       final name = prefs.getString(_prefNameKey);
 
@@ -108,7 +114,7 @@ class PrinterService {
 
       return _selectedDevice;
     } catch (e, st) {
-      _setError('تعذر تحميل الطابعة المحفوظة: $e', e, st);
+      _setError('تعذر تحميل الطابعة المحفوظة', e, st);
       return null;
     }
   }
@@ -116,28 +122,41 @@ class PrinterService {
   Future<List<BluetoothInfo>> getBondedDevices() async {
     _errorMessage = '';
 
-    if (!await requestPermissions()) {
+    final permissionsGranted = await requestPermissions();
+
+    if (!permissionsGranted) {
       return <BluetoothInfo>[];
     }
 
-    if (!await isBluetoothEnabled()) {
-      _setError('البلوتوث مطفأ. شغّله من إعدادات الجهاز ثم أعد المحاولة.');
+    final enabled = await isBluetoothEnabled();
+
+    if (!enabled) {
+      _setError('البلوتوث مطفأ. شغّله ثم أعد المحاولة.');
       return <BluetoothInfo>[];
     }
 
     try {
       return await PrintBluetoothThermal.pairedBluetooths;
     } catch (e, st) {
-      _setError('تعذر قراءة الطابعات المقترنة: $e', e, st);
+      _setError(
+        'تعذر قراءة الطابعات المقترنة. تأكد من صلاحية الأجهزة القريبة.',
+        e,
+        st,
+      );
+
       return <BluetoothInfo>[];
     }
   }
 
   Future<bool> connect(BluetoothInfo device) {
     final active = _connecting;
-    if (active != null) return active;
+
+    if (active != null) {
+      return active;
+    }
 
     final future = _connectInternal(device);
+
     _connecting = future;
 
     return future.whenComplete(() {
@@ -148,50 +167,55 @@ class PrinterService {
   Future<bool> _connectInternal(BluetoothInfo device) async {
     _errorMessage = '';
 
-    if (!await requestPermissions()) return false;
+    final permissionsGranted = await requestPermissions();
+
+    if (!permissionsGranted) {
+      return false;
+    }
 
     if (device.macAdress.trim().isEmpty) {
-      _setError('عنوان الطابعة غير صالح. اختر الطابعة من قائمة الأجهزة.');
+      _setError('عنوان الطابعة غير صالح. اختر الطابعة المقترنة.');
       return false;
     }
 
     if (!await isBluetoothEnabled()) {
-      _setError('البلوتوث مطفأ. شغّله ثم حاول الاتصال بالطابعة.');
+      _setError('البلوتوث مطفأ. شغّله ثم حاول الاتصال.');
       return false;
     }
 
     try {
-      var connected = await PrintBluetoothThermal.connectionStatus;
+      final isConnected = await PrintBluetoothThermal.connectionStatus;
 
-      if (!connected) {
-        connected = await PrintBluetoothThermal.connect(
+      if (!isConnected) {
+        final connected = await PrintBluetoothThermal.connect(
           macPrinterAddress: device.macAdress,
         );
-      }
 
-      if (!connected) {
-        _setError(
-          'تعذر الاتصال بالطابعة ${device.name}. تأكد أنها مقترنة وقريبة.',
-        );
-        return false;
+        if (!connected) {
+          _setError(
+            'فشل الاتصال بالطابعة ${device.name}. تأكد أنها مقترنة وقريبة.',
+          );
+          return false;
+        }
       }
 
       final verified = await PrintBluetoothThermal.connectionStatus;
+
       if (!verified) {
-        _setError('لم يتم تأكيد اتصال الطابعة. أعد المحاولة.');
+        _setError('لم يثبت اتصال الطابعة. أعد المحاولة.');
         return false;
       }
 
       _selectedDevice = device;
 
       final prefs = await SharedPreferences.getInstance();
+
       await prefs.setString(_prefMacKey, device.macAdress);
       await prefs.setString(_prefNameKey, device.name);
 
-      _errorMessage = '';
       return true;
     } catch (e, st) {
-      _setError('حدث خطأ أثناء الاتصال بالطابعة: $e', e, st);
+      _setError('حدث خطأ أثناء الاتصال بالطابعة', e, st);
       return false;
     }
   }
@@ -200,25 +224,25 @@ class PrinterService {
     try {
       await PrintBluetoothThermal.disconnect;
     } catch (e, st) {
-      _setError('تعذر فصل اتصال الطابعة: $e', e, st);
+      _setError('تعذر فصل اتصال الطابعة', e, st);
     }
   }
 
   Future<bool> _ensureConnected() async {
-    _errorMessage = '';
-
     if (_selectedDevice == null) {
       await loadSavedDevice();
     }
 
     if (_selectedDevice == null) {
       _setError(
-        'لا توجد طابعة محفوظة. افتح إعدادات الطابعة واتصل بها واحفظها أولاً.',
+        'لم تُحدَّد طابعة. افتح إعدادات الطابعة واختر جهازاً مقترناً.',
       );
       return false;
     }
 
-    if (!await requestPermissions()) return false;
+    if (!await requestPermissions()) {
+      return false;
+    }
 
     if (!await isBluetoothEnabled()) {
       _setError('البلوتوث مطفأ. شغّله ثم أعد الطباعة.');
@@ -230,27 +254,29 @@ class PrinterService {
         return true;
       }
     } catch (e, st) {
-      debugPrint('[PrinterService] فحص الاتصال: $e');
+      _setError('تعذر التحقق من اتصال الطابعة', e, st);
+      return false;
     }
 
-    // إذا انقطع الاتصال، حاول الاتصال بالطابعة المحفوظة تلقائياً.
     return connect(_selectedDevice!);
   }
 
   Future<bool> _writeReceipt(List<int> bytes) async {
     if (bytes.isEmpty) {
-      _setError('لم يتم إنشاء بيانات الفاتورة للطباعة.');
+      _setError('لا توجد بيانات لإرسالها إلى الطابعة.');
       return false;
     }
 
-    if (!await _ensureConnected()) return false;
+    if (!await _ensureConnected()) {
+      return false;
+    }
 
     try {
       final result = await PrintBluetoothThermal.writeBytes(bytes);
 
       if (result != true) {
         _setError(
-          'الاتصال موجود، لكن الطابعة لم تؤكد استلام الفاتورة. تحقق من الورق ثم أعد المحاولة.',
+          'اتصلت الطابعة لكن لم تؤكد استلام بيانات الطباعة. أعد المحاولة.',
         );
         return false;
       }
@@ -258,7 +284,7 @@ class PrinterService {
       _errorMessage = '';
       return true;
     } catch (e, st) {
-      _setError('حدث خطأ أثناء إرسال الفاتورة للطابعة: $e', e, st);
+      _setError('فشلت الطباعة. افحص اتصال الطابعة والورق.', e, st);
       return false;
     }
   }
@@ -267,11 +293,16 @@ class PrinterService {
     required Invoice invoice,
     required RestaurantInfo info,
   }) async {
-    _errorMessage = '';
-
     try {
       final profile = await CapabilityProfile.load();
-      final generator = Generator(PaperSize.mm58, profile);
+
+      // UTF-8 يمنع فشل تحويل النصوص العربية إلى Latin-1.
+      final generator = Generator(
+        PaperSize.mm58,
+        profile,
+        codec: utf8,
+      );
+
       final List<int> bytes = <int>[];
 
       bytes.addAll(
@@ -357,16 +388,21 @@ class PrinterService {
         totalItemsCount += item.quantity;
 
         var lineName = item.itemName;
+
         if (item.sizeName != null) {
           lineName += ' (${item.sizeName})';
         }
+
         if (item.flavorName != null) {
           lineName += ' - ${item.flavorName}';
         }
 
         bytes.addAll(
           generator.row(<PosColumn>[
-            PosColumn(text: lineName, width: 6),
+            PosColumn(
+              text: lineName,
+              width: 6,
+            ),
             PosColumn(
               text: '${item.quantity}',
               width: 2,
@@ -383,11 +419,14 @@ class PrinterService {
           ]),
         );
 
-        if (item.extrasText != null && item.extrasText!.isNotEmpty) {
+        if (item.extrasText != null &&
+            item.extrasText!.isNotEmpty) {
           bytes.addAll(
             generator.text(
               '  * ${item.extrasText}',
-              styles: const PosStyles(fontType: PosFontType.fontB),
+              styles: const PosStyles(
+                fontType: PosFontType.fontB,
+              ),
             ),
           );
         }
@@ -416,10 +455,15 @@ class PrinterService {
       if (invoice.discount > 0) {
         bytes.addAll(
           generator.row(<PosColumn>[
-            PosColumn(text: 'الخصم:', width: 6),
             PosColumn(
-              text:
-                  '-${CurrencyFormatter.format(invoice.discount, currency: info.currency)}',
+              text: 'الخصم:',
+              width: 6,
+            ),
+            PosColumn(
+              text: '-${CurrencyFormatter.format(
+                invoice.discount,
+                currency: info.currency,
+              )}',
               width: 6,
               styles: const PosStyles(align: PosAlign.right),
             ),
@@ -469,7 +513,7 @@ class PrinterService {
       bytes.addAll(generator.feed(2));
       bytes.addAll(generator.cut());
 
-      return await _writeReceipt(bytes);
+      return _writeReceipt(bytes);
     } catch (e, st) {
       _setError('خطأ أثناء تجهيز الفاتورة: $e', e, st);
       return false;
@@ -497,11 +541,15 @@ class PrinterService {
     required Employee employee,
     required RestaurantInfo info,
   }) async {
-    _errorMessage = '';
-
     try {
       final profile = await CapabilityProfile.load();
-      final generator = Generator(PaperSize.mm58, profile);
+
+      final generator = Generator(
+        PaperSize.mm58,
+        profile,
+        codec: utf8,
+      );
+
       final List<int> bytes = <int>[];
 
       bytes.addAll(
@@ -533,6 +581,7 @@ class PrinterService {
       );
 
       bytes.addAll(generator.hr());
+
       bytes.addAll(generator.text('اسم الموظف: ${employee.name}'));
       bytes.addAll(generator.text('الوظيفة: ${employee.role}'));
       bytes.addAll(
@@ -541,7 +590,10 @@ class PrinterService {
 
       bytes.addAll(
         generator.text(
-          'المبلغ المصروف: ${CurrencyFormatter.format(employee.salary, currency: info.currency)}',
+          'المبلغ المصروف: ${CurrencyFormatter.format(
+            employee.salary,
+            currency: info.currency,
+          )}',
           styles: const PosStyles(bold: true),
         ),
       );
@@ -551,7 +603,7 @@ class PrinterService {
       bytes.addAll(generator.feed(2));
       bytes.addAll(generator.cut());
 
-      return await _writeReceipt(bytes);
+      return _writeReceipt(bytes);
     } catch (e, st) {
       _setError('خطأ أثناء تجهيز كشف الراتب: $e', e, st);
       return false;
