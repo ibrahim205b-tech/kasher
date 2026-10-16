@@ -1,5 +1,6 @@
 
 import 'dart:async';
+
 import 'package:esc_pos_utils_plus/esc_pos_utils_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -31,48 +32,59 @@ class PrinterService {
 
   void _setError(String message, [Object? error, StackTrace? stack]) {
     _errorMessage = message;
+    debugPrint('[PrinterService] $message');
+
     if (error != null) {
-      debugPrint('[PrinterService] $message: $error');
-      if (stack != null) debugPrintStack(stackTrace: stack);
-    } else {
-      debugPrint('[PrinterService] $message');
+      debugPrint('[PrinterService] Details: $error');
+    }
+    if (stack != null) {
+      debugPrintStack(stackTrace: stack);
     }
   }
 
   Future<bool> requestPermissions() async {
     try {
-      final statuses = await <Permission>[
-        Permission.bluetooth,
-        Permission.bluetoothScan,
-        Permission.bluetoothConnect,
-        Permission.location,
-      ].request();
+      // تحقق من صلاحية البلوتوث بالطريقة التي توفرها المكتبة.
+      final pluginPermission =
+          await PrintBluetoothThermal.isPermissionBluetoothGranted;
 
-      final connectStatus = statuses[Permission.bluetoothConnect];
-      final legacyStatus = statuses[Permission.bluetooth];
+      if (!pluginPermission) {
+        // اطلب الصلاحيات المناسبة لإصدار أندرويد.
+        final statuses = await <Permission>[
+          Permission.bluetoothScan,
+          Permission.bluetoothConnect,
+          Permission.bluetooth,
+        ].request();
 
-      if (connectStatus != null &&
-          connectStatus.isDenied &&
-          legacyStatus != null &&
-          legacyStatus.isDenied) {
-        _setError(
-          'صلاحية البلوتوث مرفوضة. فعّل صلاحية الأجهزة القريبة من إعدادات التطبيق.',
-        );
-        return false;
-      }
+        final connectStatus = statuses[Permission.bluetoothConnect];
+        final legacyStatus = statuses[Permission.bluetooth];
 
-      if (connectStatus != null &&
-          (connectStatus.isPermanentlyDenied ||
-              connectStatus.isRestricted)) {
-        _setError(
-          'صلاحية البلوتوث غير متاحة. افتح إعدادات التطبيق وفعّل الأجهزة القريبة.',
-        );
-        return false;
+        if (connectStatus?.isPermanentlyDenied == true ||
+            connectStatus?.isRestricted == true ||
+            legacyStatus?.isPermanentlyDenied == true) {
+          _setError(
+            'صلاحية البلوتوث مرفوضة نهائياً. '
+            'افتح إعدادات التطبيق وفعّل صلاحية الأجهزة القريبة.',
+          );
+          return false;
+        }
+
+        // أعد الفحص بعد طلب الصلاحيات.
+        final permissionGranted =
+            await PrintBluetoothThermal.isPermissionBluetoothGranted;
+
+        if (!permissionGranted) {
+          _setError(
+            'صلاحية البلوتوث غير ممنوحة. '
+            'افتح إعدادات التطبيق واسمح للأجهزة القريبة.',
+          );
+          return false;
+        }
       }
 
       return true;
     } catch (e, st) {
-      _setError('تعذر التحقق من صلاحيات البلوتوث', e, st);
+      _setError('تعذر فحص صلاحيات البلوتوث', e, st);
       return false;
     }
   }
@@ -114,23 +126,21 @@ class PrinterService {
   Future<List<BluetoothInfo>> getBondedDevices() async {
     _errorMessage = '';
 
-    final permissionsGranted = await requestPermissions();
-    if (!permissionsGranted) return <BluetoothInfo>[];
+    if (!await requestPermissions()) {
+      return <BluetoothInfo>[];
+    }
 
-    final enabled = await isBluetoothEnabled();
-    if (!enabled) {
+    if (!await isBluetoothEnabled()) {
       _setError('البلوتوث مطفأ. شغّله من إعدادات الهاتف ثم أعد المحاولة.');
       return <BluetoothInfo>[];
     }
 
     try {
-      return await PrintBluetoothThermal.pairedBluetooths;
+      final devices = await PrintBluetoothThermal.pairedBluetooths;
+      debugPrint('[PrinterService] Paired devices: ${devices.length}');
+      return devices;
     } catch (e, st) {
-      _setError(
-        'تعذر قراءة الطابعات المقترنة. تأكد من صلاحية الأجهزة القريبة.',
-        e,
-        st,
-      );
+      _setError('تعذر قراءة الطابعات المقترنة', e, st);
       return <BluetoothInfo>[];
     }
   }
@@ -152,8 +162,10 @@ class PrinterService {
 
     if (!await requestPermissions()) return false;
 
-    if (device.macAdress.trim().isEmpty) {
-      _setError('عنوان الطابعة غير صالح. اختر الطابعة من قائمة الأجهزة المقترنة.');
+    final mac = device.macAdress.trim();
+
+    if (mac.isEmpty) {
+      _setError('عنوان الطابعة فارغ. اختر الطابعة من قائمة الأجهزة المقترنة.');
       return false;
     }
 
@@ -163,36 +175,50 @@ class PrinterService {
     }
 
     try {
-      final isConnected = await PrintBluetoothThermal.connectionStatus;
+      debugPrint(
+        '[PrinterService] Connecting to ${device.name}, address: $mac',
+      );
 
-      if (!isConnected) {
+      final alreadyConnected =
+          await PrintBluetoothThermal.connectionStatus;
+
+      if (!alreadyConnected) {
         final connected = await PrintBluetoothThermal.connect(
-          macPrinterAddress: device.macAdress,
+          macPrinterAddress: mac,
         );
+
+        debugPrint('[PrinterService] Connect result: $connected');
 
         if (!connected) {
           _setError(
-            'فشل الاتصال بالطابعة ${device.name}. تأكد أنها مقترنة وقريبة، ثم أعد المحاولة.',
+            'فشل اتصال المكتبة بالطابعة ${device.name}. '
+            'تحقق من اقترانها، وأغلق أي تطبيق آخر يستخدم الطابعة، '
+            'ثم أعد المحاولة.',
           );
           return false;
         }
       }
 
       final verified = await PrintBluetoothThermal.connectionStatus;
+
       if (!verified) {
-        _setError('بدأ الاتصال لكن لم يثبت اتصال الطابعة. أعد المحاولة.');
+        _setError(
+          'لم يتم تأكيد الاتصال بالطابعة بعد محاولة الاتصال. أعد المحاولة.',
+        );
         return false;
       }
 
       _selectedDevice = device;
 
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_prefMacKey, device.macAdress);
+      await prefs.setString(_prefMacKey, mac);
       await prefs.setString(_prefNameKey, device.name);
 
+      _errorMessage = '';
+      debugPrint('[PrinterService] Connection verified and device saved.');
       return true;
     } catch (e, st) {
-      _setError('حدث خطأ أثناء الاتصال بالطابعة', e, st);
+      _setError('حدث استثناء أثناء الاتصال بالطابعة: $e', e, st);
       return false;
     }
   }
@@ -200,6 +226,7 @@ class PrinterService {
   Future<void> disconnect() async {
     try {
       await PrintBluetoothThermal.disconnect;
+      debugPrint('[PrinterService] Disconnected.');
     } catch (e, st) {
       _setError('تعذر فصل اتصال الطابعة', e, st);
     }
@@ -225,7 +252,9 @@ class PrinterService {
     }
 
     try {
-      if (await PrintBluetoothThermal.connectionStatus) return true;
+      if (await PrintBluetoothThermal.connectionStatus) {
+        return true;
+      }
     } catch (e, st) {
       _setError('تعذر التحقق من اتصال الطابعة', e, st);
       return false;
@@ -245,21 +274,19 @@ class PrinterService {
     try {
       final result = await PrintBluetoothThermal.writeBytes(bytes);
 
-      if (result != true) {
+      if (!result) {
         _setError(
-          'اتصلت الطابعة لكن لم تؤكد استلام بيانات الطباعة. جرّب مرة أخرى.',
+          'الاتصال موجود لكن المكتبة لم تؤكد إرسال بيانات الطباعة. '
+          'تحقق من الورق والطابعة ثم أعد المحاولة.',
         );
         return false;
       }
 
       _errorMessage = '';
+      debugPrint('[PrinterService] Print data sent successfully.');
       return true;
     } catch (e, st) {
-      _setError(
-        'فشلت الطباعة. افحص اتصال الطابعة والورق ثم أعد المحاولة.',
-        e,
-        st,
-      );
+      _setError('فشل إرسال بيانات الطباعة: $e', e, st);
       return false;
     }
   }
